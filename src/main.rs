@@ -9,6 +9,10 @@ use base64;
 use serde_json::json;
 use solana_sdk::system_instruction;
 use solana_sdk::instruction::Instruction;
+use solana_sdk::instruction::AccountMeta;
+use spl_token::instruction as token_instruction;
+use spl_associated_token_account::get_associated_token_address;
+
 
 
 #[derive(Serialize)]
@@ -84,6 +88,34 @@ struct SendSolData {
     accounts: Vec<String>,
     instruction_data: String,
 }
+#[derive(Deserialize)]
+struct SendTokenRequest {
+    destination: String,
+    mint: String,
+    owner: String,
+    amount: u64,
+}
+
+#[derive(Serialize)]
+struct AccountInfo {
+    pubkey: String,
+    isSigner: bool,
+}
+
+#[derive(Serialize)]
+struct SendTokenData {
+    program_id: String,
+    accounts: Vec<AccountInfo>,
+    instruction_data: String,
+}
+
+#[derive(Serialize)]
+struct SendTokenResponse {
+    success: bool,
+    data: Option<SendTokenData>,
+    error: Option<String>,
+}
+
 async fn handle_request(req: Request<Body>) -> Result<Response<Body>, Infallible> {
     let (method, path) = (req.method(), req.uri().path());
 
@@ -181,6 +213,84 @@ async fn handle_request(req: Request<Body>) -> Result<Response<Body>, Infallible
                         }
                     }
                 }
+
+                // POST /send/token
+                (&Method::POST, "/send/token") => {
+                    let body_bytes = hyper::body::to_bytes(req.into_body()).await.unwrap();
+                    let parsed: Result<SendTokenRequest, _> = serde_json::from_slice(&body_bytes);
+        
+                    match parsed {
+                        Ok(req_data) => {
+                            let destination = req_data.destination.parse::<Pubkey>();
+                            let mint = req_data.mint.parse::<Pubkey>();
+                            let owner = req_data.owner.parse::<Pubkey>();
+        
+                            if let (Ok(dest_pub), Ok(mint_pub), Ok(owner_pub)) = (destination, mint, owner) {
+                                let from_token_account = get_associated_token_address(&owner_pub, &mint_pub);
+                                let to_token_account = get_associated_token_address(&dest_pub, &mint_pub);
+        
+                                let ix_result = token_instruction::transfer(
+                                    &spl_token::id(),
+                                    &from_token_account,
+                                    &to_token_account,
+                                    &owner_pub,
+                                    &[],
+                                    req_data.amount,
+                                );
+        
+                                if let Ok(ix) = ix_result {
+                                    let data = SendTokenData {
+                                        program_id: ix.program_id.to_string(),
+                                        accounts: ix.accounts.iter().map(|a| AccountInfo {
+                                            pubkey: a.pubkey.to_string(),
+                                            isSigner: a.is_signer,
+                                        }).collect(),
+                                        instruction_data: base64::encode(&ix.data),
+                                    };
+        
+                                    let json = serde_json::to_string(&SendTokenResponse {
+                                        success: true,
+                                        data: Some(data),
+                                        error: None,
+                                    }).unwrap();
+        
+                                    return Ok(Response::builder()
+                                        .header("Content-Type", "application/json")
+                                        .status(StatusCode::OK)
+                                        .body(Body::from(json))
+                                        .unwrap());
+                                }
+                            }
+        
+                            let err = serde_json::to_string(&SendTokenResponse {
+                                success: false,
+                                data: None,
+                                error: Some("Invalid public keys".to_string()),
+                            }).unwrap();
+        
+                            Ok(Response::builder()
+                                .header("Content-Type", "application/json")
+                                .status(StatusCode::BAD_REQUEST)
+                                .body(Body::from(err))
+                                .unwrap())
+                        }
+        
+                        Err(_) => {
+                            let err = serde_json::to_string(&SendTokenResponse {
+                                success: false,
+                                data: None,
+                                error: Some("Missing or invalid fields".to_string()),
+                            }).unwrap();
+        
+                            Ok(Response::builder()
+                                .header("Content-Type", "application/json")
+                                .status(StatusCode::BAD_REQUEST)
+                                .body(Body::from(err))
+                                .unwrap())
+                        }
+                    }
+                }
+                
         
 
         // POST /message/sign
