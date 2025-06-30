@@ -116,6 +116,43 @@ struct SendTokenResponse {
     error: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct CreateTokenRequest {
+    mintAuthority: String,
+    mint: String,
+    decimals: u8,
+}
+
+#[derive(Deserialize)]
+struct MintTokenRequest {
+    mint: String,
+    destination: String,
+    authority: String,
+    amount: u64,
+}
+
+#[derive(Serialize)]
+struct TokenAccountInfo {
+    pubkey: String,
+    is_signer: bool,
+    is_writable: bool,
+}
+
+#[derive(Serialize)]
+struct TokenInstructionResponse {
+    success: bool,
+    data: Option<TokenInstructionData>,
+    error: Option<String>,
+}
+
+#[derive(Serialize)]
+struct TokenInstructionData {
+    program_id: String,
+    accounts: Vec<TokenAccountInfo>,
+    instruction_data: String,
+}
+
+
 async fn handle_request(req: Request<Body>) -> Result<Response<Body>, Infallible> {
     let (method, path) = (req.method(), req.uri().path());
 
@@ -356,6 +393,156 @@ async fn handle_request(req: Request<Body>) -> Result<Response<Body>, Infallible
                 }
             }
         }
+                // POST /token/create
+                (&Method::POST, "/token/create") => {
+                    let body_bytes = hyper::body::to_bytes(req.into_body()).await.unwrap();
+                    let parsed: Result<CreateTokenRequest, _> = serde_json::from_slice(&body_bytes);
+        
+                    match parsed {
+                        Ok(req_data) => {
+                            let mint_pubkey = req_data.mint.parse::<Pubkey>();
+                            let mint_auth = req_data.mintAuthority.parse::<Pubkey>();
+        
+                            if let (Ok(mint), Ok(mint_authority)) = (mint_pubkey, mint_auth) {
+                                let ix = spl_token::instruction::initialize_mint(
+                                    &spl_token::id(),
+                                    &mint,
+                                    &mint_authority,
+                                    None,
+                                    req_data.decimals,
+                                );
+        
+                                if let Ok(ix) = ix {
+                                    let accounts = ix.accounts.iter().map(|a| TokenAccountInfo {
+                                        pubkey: a.pubkey.to_string(),
+                                        is_signer: a.is_signer,
+                                        is_writable: a.is_writable,
+                                    }).collect();
+        
+                                    let json = serde_json::to_string(&TokenInstructionResponse {
+                                        success: true,
+                                        data: Some(TokenInstructionData {
+                                            program_id: ix.program_id.to_string(),
+                                            accounts,
+                                            instruction_data: base64::encode(&ix.data),
+                                        }),
+                                        error: None,
+                                    }).unwrap();
+        
+                                    return Ok(Response::builder()
+                                        .header("Content-Type", "application/json")
+                                        .status(StatusCode::OK)
+                                        .body(Body::from(json))
+                                        .unwrap());
+                                }
+                            }
+        
+                            let err = serde_json::to_string(&TokenInstructionResponse {
+                                success: false,
+                                data: None,
+                                error: Some("Invalid public keys".to_string()),
+                            }).unwrap();
+        
+                            Ok(Response::builder()
+                                .header("Content-Type", "application/json")
+                                .status(StatusCode::BAD_REQUEST)
+                                .body(Body::from(err))
+                                .unwrap())
+                        }
+        
+                        Err(_) => {
+                            let err = serde_json::to_string(&TokenInstructionResponse {
+                                success: false,
+                                data: None,
+                                error: Some("Missing or invalid fields".to_string()),
+                            }).unwrap();
+        
+                            Ok(Response::builder()
+                                .header("Content-Type", "application/json")
+                                .status(StatusCode::BAD_REQUEST)
+                                .body(Body::from(err))
+                                .unwrap())
+                        }
+                    }
+                }
+        
+                // POST /token/mint
+                (&Method::POST, "/token/mint") => {
+                    let body_bytes = hyper::body::to_bytes(req.into_body()).await.unwrap();
+                    let parsed: Result<MintTokenRequest, _> = serde_json::from_slice(&body_bytes);
+        
+                    match parsed {
+                        Ok(req_data) => {
+                            let mint_pubkey = req_data.mint.parse::<Pubkey>();
+                            let authority_pubkey = req_data.authority.parse::<Pubkey>();
+                            let destination_pubkey = req_data.destination.parse::<Pubkey>();
+        
+                            if let (Ok(mint), Ok(authority), Ok(destination_owner)) = (mint_pubkey, authority_pubkey, destination_pubkey) {
+                                let destination_token_account = get_associated_token_address(&destination_owner, &mint);
+        
+                                let ix = spl_token::instruction::mint_to(
+                                    &spl_token::id(),
+                                    &mint,
+                                    &destination_token_account,
+                                    &authority,
+                                    &[],
+                                    req_data.amount,
+                                );
+        
+                                if let Ok(ix) = ix {
+                                    let accounts = ix.accounts.iter().map(|a| TokenAccountInfo {
+                                        pubkey: a.pubkey.to_string(),
+                                        is_signer: a.is_signer,
+                                        is_writable: a.is_writable,
+                                    }).collect();
+        
+                                    let json = serde_json::to_string(&TokenInstructionResponse {
+                                        success: true,
+                                        data: Some(TokenInstructionData {
+                                            program_id: ix.program_id.to_string(),
+                                            accounts,
+                                            instruction_data: base64::encode(&ix.data),
+                                        }),
+                                        error: None,
+                                    }).unwrap();
+        
+                                    return Ok(Response::builder()
+                                        .header("Content-Type", "application/json")
+                                        .status(StatusCode::OK)
+                                        .body(Body::from(json))
+                                        .unwrap());
+                                }
+                            }
+        
+                            let err = serde_json::to_string(&TokenInstructionResponse {
+                                success: false,
+                                data: None,
+                                error: Some("Invalid public keys".to_string()),
+                            }).unwrap();
+        
+                            Ok(Response::builder()
+                                .header("Content-Type", "application/json")
+                                .status(StatusCode::BAD_REQUEST)
+                                .body(Body::from(err))
+                                .unwrap())
+                        }
+        
+                        Err(_) => {
+                            let err = serde_json::to_string(&TokenInstructionResponse {
+                                success: false,
+                                data: None,
+                                error: Some("Missing or invalid fields".to_string()),
+                            }).unwrap();
+        
+                            Ok(Response::builder()
+                                .header("Content-Type", "application/json")
+                                .status(StatusCode::BAD_REQUEST)
+                                .body(Body::from(err))
+                                .unwrap())
+                        }
+                    }
+                }
+        
 
         // POST /message/verify
         (&Method::POST, "/message/verify") => {
