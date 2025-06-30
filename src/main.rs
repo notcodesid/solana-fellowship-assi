@@ -6,6 +6,7 @@ use axum::{
 };
 use serde_json::{json, Value};
 use tower_http::cors::CorsLayer;
+use std::env;
 
 mod handlers;
 
@@ -17,19 +18,25 @@ async fn main() {
         .route("/keypair", post(handlers::keypair::generate_keypair))
         .route("/message/sign", post(handlers::sign::sign_message))
         .route("/message/verify", post(handlers::verify::verify_message))
+        .route("/token/create", post(handlers::token_create::create_token))
         .layer(CorsLayer::permissive());
 
+    // get port from environment or use default
+    let port = env::var("PORT").unwrap_or_else(|_| "3000".to_string());
+    let addr = format!("0.0.0.0:{}", port);
+
     // bind server to address
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
+    let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .unwrap();
 
     println!("hello solana fellowship members :D");
-    println!("server running on http://localhost:3000");
+    println!("server running on {}", addr);
     println!("available endpoints:");
     println!("  POST /keypair - generate new solana keypair");
     println!("  POST /message/sign - sign a message with private key");
     println!("  POST /message/verify - verify a signed message");
+    println!("  POST /token/create - create spl token mint instruction");
 
     // start the server
     axum::serve(listener, app)
@@ -46,7 +53,8 @@ async fn root_handler() -> Result<Json<Value>, StatusCode> {
         "endpoints": {
             "POST /keypair": "generate new solana keypair",
             "POST /message/sign": "sign a message with private key",
-            "POST /message/verify": "verify a signed message"
+            "POST /message/verify": "verify a signed message",
+            "POST /token/create": "create spl token mint instruction"
         }
     })))
 }
